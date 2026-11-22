@@ -51,7 +51,7 @@ b_OC = a_OC/(rho_LOX*eta_P_O);
 b_FPB = a_FPB/(rho_LH2*eta_P_F);
 
 % Calore specifico scambiato nel circuito rigenerativo per kg di fuel totale
-Q_dot_m_dot_F = 2.615e6;     % [J/kg_F]
+Q_dot_m_dot_F = 2.45e6;     % [J/kg_F]
 T_0T_max_lim  = 600.0;      % Limite tecnologico temperatura ingresso turbina [K]
 
 % Studio preliminare della Curva Caratteristica pc(tau) per scegliere tau ottimo
@@ -382,10 +382,13 @@ else
     Pr_c = 0.55;
 end
 
-% Vettori geometrici continui lungo tutto il motore (x = 0 all'iniettore)
-x_vec = geom_2D.x_full;
-R_vec = geom_2D.r_full;
+% Geometria completa TOP PURO
+% Camera + convergente + raccordo gola + TOP
+
+x_vec = [geom_2D.x_cam_all(1:end-1), geom_2D.x_throat + geom_2D.x_TOP_ref];
+R_vec = [geom_2D.r_cam_all(1:end-1), geom_2D.r_TOP_ref];
 x_throat = geom_2D.x_throat;
+
 A_vec = pi*R_vec.^2;
 eps_x = A_vec/At_e;
 N_pts = length(x_vec);
@@ -430,8 +433,8 @@ for j = 1:N_pts
 end
 
 %% 7. INTEGRAZIONE CIRCUITO DI RAFFREDDAMENTO
-P_grid = [200, 210, 220, 230, 240, 250, 260]; % Pressioni scaricate [bar]
-nist_files = {'H2_200.txt', 'H2_210.txt', 'H2_220.txt', 'H2_230.txt', ...
+P_grid = [170, 180, 190, 200, 210, 220, 230, 240, 250, 260]; % Pressioni scaricate [bar]
+nist_files = {'H2_170.txt', 'H2_180.txt', 'H2_190.txt', 'H2_200.txt', 'H2_210.txt', 'H2_220.txt', 'H2_230.txt', ...
     'H2_240.txt', 'H2_250.txt', 'H2_260.txt'};
 
 nP = length(P_grid);
@@ -461,29 +464,38 @@ eps_r      = 3.0e-6;                                % Scabrezza canali fresati [
 N_chan = 180;                                       % Numero canali lungo la circonferenza [-]
 W_rib  = 1.0e-3;                                    % Spessore nervatura costante [m] (1.0 mm)
 H_min  = 1.0e-3;                                    % Altezza minima fresabile [m] (1.0 mm)
-H_max  = 4.0e-3;                                    % Altezza massima fresabile [m] (4.0 mm)
+H_max  = 8.0e-3;                                    % Altezza massima fresabile [m] (4.0 mm)
 
 % Condizioni al contorno ingresso cooling jacket (sezione divergente a eps = 15)
-iter_P = 1;
-while iter_P < 100
-    P_in_cool_bar = 250.0;                              % Pressione ingresso canali [bar]
-    T_in_cool     = 40.0;                               % Temperatura ingresso H2 nei canali [K]
+T_in_cool = 40.0;                                   % Temperatura ingresso H2 nei canali [K]
 
-    idx_regen_end = find(eps_x >= 15.0 & x_vec > x_throat, 1, 'first');
-    if isempty(idx_regen_end)
-        idx_regen_end = N_pts;
-    end
+idx_regen_end = find(eps_x >= 15.0 & x_vec > x_throat, 1, 'first');
+if isempty(idx_regen_end)
+    idx_regen_end = N_pts;
+end
 
-    q_flux = zeros(1, N_pts);
-    T_wh = zeros(1, N_pts);
-    T_co = zeros(1, N_pts);
-    P_co_bar = zeros(1, N_pts);
-    u_co_vec = zeros(1, N_pts);
+% Inizializzazione ciclo di ricerca pressione ingresso cooling
+P_in_cool_bar = 250.0;                              % Stima iniziale [bar]
+err_P_cool    = 100.0;
+tol_P         = 1e-3;                               % Tolleranza di chiusura [bar]
+iter_P        = 0;
+max_iter_P    = 50;
+
+while (err_P_cool > tol_P) && (iter_P < max_iter_P)
+    iter_P = iter_P + 1;
+
+    q_flux     = zeros(1, N_pts);
+    T_wh       = zeros(1, N_pts);
+    T_co       = zeros(1, N_pts);
+    P_co_bar   = zeros(1, N_pts);
+    u_co_vec   = zeros(1, N_pts);
     W_chan_vec = zeros(1, N_pts);
     H_chan_vec = zeros(1, N_pts);
-    dQ_vec = zeros(1, N_pts);
+    dQ_vec     = zeros(1, N_pts);
+    rho_vec    = zeros(1, N_pts);
+    mu_vec     = zeros(1, N_pts);
 
-    T_co(idx_regen_end) = T_in_cool;
+    T_co(idx_regen_end)     = T_in_cool;
     P_co_bar(idx_regen_end) = P_in_cool_bar;
 
     for j = (idx_regen_end - 1):-1:1
@@ -506,9 +518,9 @@ while iter_P < 100
         % Stima iniziale per iterazione locale sulla stazione j
         T_co_guess = T_co(j + 1);
         P_co_guess = P_co_bar(j + 1);
-        T_wh_loc = T_wh_target;
-        err_loc = 1.0;
-        iter_loc = 0;
+        T_wh_loc   = T_wh_target;
+        err_loc    = 1.0;
+        iter_loc   = 0;
 
         while (err_loc > 1e-3) && (iter_loc < 30)
             iter_loc = iter_loc + 1;
@@ -517,30 +529,26 @@ while iter_P < 100
 
             % 1. Proprieta' locali H2 supercritico da tabelle NIST
             rho_j = interp2(P_grid, T_grid, RHO_tab, P_mid, T_mid, 'linear');
-            cp_j = interp2(P_grid, T_grid, CP_tab, P_mid, T_mid, 'linear');
-            mu_j = interp2(P_grid, T_grid, MU_tab, P_mid, T_mid, 'linear');
-            k_j = interp2(P_grid, T_grid, K_tab, P_mid, T_mid, 'linear');
-            Pr_j = mu_j*cp_j/k_j;
+            cp_j  = interp2(P_grid, T_grid, CP_tab,  P_mid, T_mid, 'linear');
+            mu_j  = interp2(P_grid, T_grid, MU_tab,  P_mid, T_mid, 'linear');
+            k_j   = interp2(P_grid, T_grid, K_tab,   P_mid, T_mid, 'linear');
+            Pr_j  = mu_j*cp_j/k_j;
 
             % 2. Aggiornamento sigma_B di Bartz con T_wh_loc
-            term1 = 0.5*(T_wh_loc/Tc_opt)*(1 + 0.5*(gam_loc - 1)*M_loc^2) + 0.5;
-            term2 = 1 + 0.5*(gam_loc - 1)*M_loc^2;
+            term1   = 0.5*(T_wh_loc/Tc_opt)*(1 + 0.5*(gam_loc - 1)*M_loc^2) + 0.5;
+            term2   = 1 + 0.5*(gam_loc - 1)*M_loc^2;
             sigma_B = 1/(term1^0.68*term2^0.12);
-            hg_j = h_g_base(j)*sigma_B;
+            hg_j    = h_g_base(j)*sigma_B;
 
             % 3. Dimensionamento H_chan_loc dal carico termico di progetto T_wh_target
-            % Funzione residuo T_wh(H) - T_wh_target = 0
             f_Twh = @(H) eval_Twh_canale(H, W_chan_loc, W_rib, N_chan, R_mid, t_wall, k_wall, ...
                 m_dot_cool, rho_j, mu_j, k_j, Pr_j, hg_j, T_aw_vec(j), T_mid) - T_wh_target;
 
             if f_Twh(H_max) <= 0
-                % Anche con altezza massima H_max la parete resta piu' fredda di T_wh_target
                 H_chan_loc = H_max;
             elseif f_Twh(H_min) >= 0
-                % Carico estremo: saturazione all'altezza minima fresabile H_min
                 H_chan_loc = H_min;
             else
-                % Trova l'altezza esatta H_chan_loc che mantiene T_wh = T_wh_target
                 H_chan_loc = fzero(f_Twh, [H_min, H_max]);
             end
 
@@ -552,40 +560,52 @@ while iter_P < 100
             T_co_new = T_co(j + 1) + dQ_j/(m_dot_cool*cp_j);
 
             % 5. Perdite di carico Darcy-Weisbach (Haaland)
-            f_D = (-1.8*log10((eps_r/(3.7*D_hyd_loc))^1.11 + 6.9/Re_j))^(-2);
+            f_D   = (-1.8*log10((eps_r/(3.7*D_hyd_loc))^1.11 + 6.9/Re_j))^(-2);
             dP_Pa = f_D*(ds/D_hyd_loc)*0.5*rho_j*u_j^2;
             P_co_new = P_co_bar(j + 1) - dP_Pa/1e5;
 
-            err_loc = max(abs(T_co_new - T_co_guess), abs(T_wh_new - T_wh_loc));
+            err_loc    = max(abs(T_co_new - T_co_guess), abs(T_wh_new - T_wh_loc));
             T_co_guess = T_co_new;
             P_co_guess = P_co_new;
-            T_wh_loc = T_wh_new;
+            T_wh_loc   = T_wh_new;
         end
 
-        h_g_vec(j) = hg_j;
-        q_flux(j) = q_j;
-        T_wh(j) = T_wh_loc;
-        T_co(j) = T_co_guess;
-        P_co_bar(j) = P_co_guess;
-        u_co_vec(j) = u_j;
+        h_g_vec(j)    = hg_j;
+        q_flux(j)     = q_j;
+        T_wh(j)       = T_wh_loc;
+        T_co(j)       = T_co_guess;
+        P_co_bar(j)   = P_co_guess;
+        u_co_vec(j)   = u_j;
         W_chan_vec(j) = W_chan_loc;
         H_chan_vec(j) = H_chan_loc;
-        dQ_vec(j) = dQ_j;
+        dQ_vec(j)     = dQ_j;
+        rho_vec(j)    = rho_j;
+        mu_vec(j)     = mu_j;
     end
-    T_wh(idx_regen_end) = T_wh(idx_regen_end - 1);
-    q_flux(idx_regen_end) = q_flux(idx_regen_end - 1);
+    T_wh(idx_regen_end)       = T_wh(idx_regen_end - 1);
+    q_flux(idx_regen_end)     = q_flux(idx_regen_end - 1);
     W_chan_vec(idx_regen_end) = W_chan_vec(idx_regen_end - 1);
     H_chan_vec(idx_regen_end) = H_chan_vec(idx_regen_end - 1);
 
-    Q_dot_single = sum(dQ_vec);                         % Potenza termica estratta [W]
+    % Verifica bilancio pressioni a valle della turbina
+    Q_dot_single     = sum(dQ_vec);                     % Potenza termica estratta [W]
     Q_dot_m_dot_calc = Q_dot_single/m_dot_F_e;          % Calore specifico per kg di fuel [J/kg]
-    dP_cool_bar = P_in_cool_bar - P_co_bar(1);          % Caduta pressione totale canali [bar]
-    P_in_t = P_in_cool_bar - dP_cool_bar;
-    P_out = P_in_t/pi_T_act;
-    err_P_cool = abs(Pc_bar - P_out);
-    P_in_cool_bar = P_in_cool_bar - 1;
-    iter_P = iter_P + 1;
+    dP_cool_bar      = P_in_cool_bar - P_co_bar(1);     % Caduta pressione totale canali [bar]
+    P_in_t           = P_co_bar(1);                     % Pressione ingresso turbina (= P_in_cool_bar - dP_cool_bar)
+    P_out            = P_in_t/pi_T_act;                 % Pressione scarico turbina [bar]
+
+    % Aggiornamento adattivo (con fattore di rilassamento 0.8 per stabilita')
+    diff_P     = P_out - Pc_bar;                        % Positivo se P_out > Pc_bar (troppo alta)
+    err_P_cool = abs(diff_P);
+
+    if err_P_cool > tol_P
+        P_in_cool_bar = P_in_cool_bar - 0.8 * diff_P * pi_T_act;
+    end
 end
+
+fprintf('Convergenza raggiunta in %d iterazioni:\n', iter_P);
+fprintf('P_in_cool = %.2f bar | dP_cool = %.2f bar | P_in_turb = %.2f bar | P_out_turb = %.2f bar\n', ...
+        P_in_cool_bar, dP_cool_bar, P_in_t, P_out);
 
 fprintf('================== VALIDAZIONE SCAMBIO TERMICO (BARTZ + NIST) ==================\n');
 fprintf('  Potenza termica estratta (singolo motore) : %.2f MW\n', Q_dot_single/1e6);
@@ -601,174 +621,180 @@ fprintf('  Altezza canali H_chan (Gola -> Camera)    : %.2f mm -> %.2f mm\n', ..
 fprintf('  Velocita'' max H2 nei canali (u_co,max)    : %.1f m/s\n', max(u_co_vec(1:idx_regen_end)));
 fprintf('================================================================================\n');
 
-%% 8. GRAFICI COMPLETI PER LA RELAZIONE E PRESENTAZIONE
-% --- FIGURA 1: Analisi Parametrica O/F (Con Confronto Prestazioni TIC+TOP vs Solo TOP) ---
-figure('Name', '1 - Analisi Parametrica O/F e Confronto Prestazioni TIC+TOP vs TOP', 'Color', 'w', 'Position', [40, 60, 1060, 580]);
-subplot(2,2,1);
-plot(OF_vec, Tc_vec, 'r-o', 'LineWidth', 1.8); grid on;
-xlabel('Rapporto di Miscela O/F [-]'); ylabel('T_c [K]');
-title('Temperatura in Camera di Combustione (CEA)');
+% %% 7B. VALORI CFD
+% 
+% u_chan = u_co_vec(162);
+% rho_chan = rho_vec(162);
+% mu_chan = mu_vec(162);
 
-subplot(2,2,2);
-plot(OF_vec, Isp_eq_vec,   'b--', 'LineWidth', 1.4); hold on;
-plot(OF_vec, Isp_froz_vec, 'k:',  'LineWidth', 1.4);
-plot(OF_vec, Isp_TOP_vec,  'm-.', 'LineWidth', 1.6);
-plot(OF_vec, Isp_re_vec,   'r-s', 'LineWidth', 2.0); grid on;
-xlabel('Rapporto di Miscela O/F [-]'); ylabel('I_{sp,vac} [s]');
-title('Impulso Specifico nel Vuoto (Confronto TOP Puro vs TIC+TOP)');
-legend('CEA Equilibrium', 'CEA Frozen Gola', 'Reale Solo TOP', 'Reale Ibrido TIC+TOP', 'Location', 'southwest');
-
-subplot(2,2,3);
-plot(OF_vec, xF_vec*100, 'm-d', 'LineWidth', 1.8); grid on;
-yline(100, 'r--', 'Limite Full-Flow (100%)');
-xlabel('Rapporto di Miscela O/F [-]'); ylabel('Frazione Fuel in Turbina x_F [%]');
-title(sprintf('Frazione Split-Flow x_F richiesta a P_c = %d bar', Pc_bar));
-
-subplot(2,2,4);
-yyaxis left
-plot(OF_vec, m0_TOP_t_vec, 'c--', 'LineWidth', 1.5); hold on;
-plot(OF_vec, m0_t_vec,     'b-o', 'LineWidth', 2.0);
-plot(OF_opt, m0_min_t,     'kp',  'MarkerSize', 14, 'MarkerFaceColor', 'y');
-ylabel('Massa Iniziale 2° Stadio m_0 [t]');
-yyaxis right
-plot(OF_vec, V_tanks_vec, 'r-s', 'LineWidth', 1.8);
-ylabel('Volume Totale Serbatoi V_{tanks} [m^3]');
-xlabel('Rapporto di Miscela O/F [-]');
-title('Massa Stadio m_0 (TIC+TOP vs TOP) e Volume Serbatoi');
-legend('m_0 (Solo TOP)', 'm_0 (Ibrido TIC+TOP)', 'Punto Ottimo', 'V_{tanks}', 'Location', 'northwest');
-grid on;
-
-% --- FIGURA 2: Confronto Diretto Profilo Geometrico 2D, Angolo e Curvatura (TIC+TOP vs TOP Puro) ---
-figure('Name', '2 - Confronto Geometrico e Gasdinamico: Ibrido TIC+TOP vs Solo TOP', 'Color', 'w', 'Position', [70, 70, 1220, 520]);
-
-subplot(1,3,1);
-plot(geom_2D.x_cam_all,  geom_2D.r_cam_all, 'k-', 'LineWidth', 2.0); hold on;
-plot(geom_2D.x_cam_all, -geom_2D.r_cam_all, 'k-', 'LineWidth', 2.0, 'HandleVisibility', 'off');
-plot(x_throat + geom_2D.x_TOP_ref,  geom_2D.r_TOP_ref, 'r--', 'LineWidth', 1.8);
-plot(x_throat + geom_2D.x_TOP_ref, -geom_2D.r_TOP_ref, 'r--', 'LineWidth', 1.8, 'HandleVisibility', 'off');
-plot(x_throat + geom_2D.x_tic_rel,  geom_2D.r_tic, 'g-', 'LineWidth', 2.8);
-plot(x_throat + geom_2D.x_tic_rel, -geom_2D.r_tic, 'g-', 'LineWidth', 2.8, 'HandleVisibility', 'off');
-plot(x_throat + geom_2D.x_top_rel,  geom_2D.r_top, 'b-', 'LineWidth', 2.2);
-plot(x_throat + geom_2D.x_top_rel, -geom_2D.r_top, 'b-', 'LineWidth', 2.2, 'HandleVisibility', 'off');
-xline(x_throat, 'r:', 'Gola', 'LineWidth', 1.2);
-xline(x_vec(idx_regen_end), 'c-.', 'Fine Cooling (\epsilon=12)', 'LineWidth', 1.3);
-plot(x_throat + geom_2D.xN_rel,   geom_2D.yN,   'ms', 'MarkerSize', 7, 'MarkerFaceColor', 'm');
-plot(x_throat + geom_2D.x_tr_rel, geom_2D.r_tr, 'ko', 'MarkerSize', 7, 'MarkerFaceColor', 'y');
-yline(0, 'k:', 'HandleVisibility', 'off');
-axis equal; grid on;
-xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Raggio Locale r [m]');
-title(sprintf('Contorno 2D Motore Completo (L_{tot} = %.2f m, \\epsilon = %.1f)', L_tot_engine, eps_opt));
-legend('Camera + Gola (R_u, R_d)', 'Profilo Solo TOP (Rao Puro)', ...
-    '1^a Parte: Tratto TIC (C^2)', '2^a Parte: Parabola TOP', ...
-    'Gola', 'Fine Cooling (\epsilon=12)', 'Punto Inflessione N', ...
-    sprintf('Raccordo TIC\\rightarrowTOP (\\epsilon=%.1f)', eps_tr_TIC), 'Location', 'northwest');
-
-subplot(1,3,2);
-yyaxis left
-plot(geom_2D.x_div_TOP_only, geom_2D.theta_div_TOP_only, 'r--', 'LineWidth', 1.8); hold on;
-plot(geom_2D.x_div_rel,      geom_2D.theta_div_deg,      'b-',  'LineWidth', 2.2);
-ylabel('Angolo Locale di Parete \theta(x) [deg]');
-yyaxis right
-r_TOP_interp = interp1(geom_2D.x_div_TOP_only, geom_2D.r_div_TOP_only, geom_2D.x_div_rel, 'pchip');
-delta_r_mm = (geom_2D.r_div_rel - r_TOP_interp)*1000;
-plot(geom_2D.x_div_rel, delta_r_mm, 'g-.', 'LineWidth', 1.8);
-ylabel('Scostamento Radiale \Delta r = r_{TIC+TOP} - r_{TOP} [mm]');
-xline(geom_2D.xN_rel,   'm:', 'Punto N');
-xline(geom_2D.x_tr_rel, 'k-.', sprintf('Fine TIC (\\epsilon=%.1f)', eps_tr_TIC));
-grid on;
-xlabel('Distanza Assiale dalla Gola x - x_t [m]');
-title('Confronto Pendenza \theta(x) e Scostamento \Delta r [mm]');
-legend('Solo TOP (\theta)', 'Ibrido TIC+TOP (\theta)', '\Delta r(x) [mm]', 'Location', 'northeast');
-
-subplot(1,3,3);
-plot(geom_2D.x_div_TOP_only, geom_2D.dtheta_dx_TOP_only, 'r--', 'LineWidth', 1.8); hold on;
-plot(geom_2D.x_div_rel,      geom_2D.dtheta_dx_TICTOP,   'b-',  'LineWidth', 2.2);
-xline(geom_2D.xN_rel,   'm:', 'Salto in N (TOP)');
-xline(geom_2D.x_tr_rel, 'k-.', 'Transizione TIC\rightarrowTOP');
-yline(0, 'k:');
-xlim([0, min(1.0, geom_2D.L_noz)]); grid on;
-xlabel('Distanza Assiale dalla Gola x - x_t [m] (Zoom Primi 1.0 m)');
-ylabel('Gradiente di Rotazione Parete d\theta/dx [deg/m]');
-title('Smorzamento Discontinuita'' in N (Riduzione Urto Interno)');
-legend('Solo TOP (Forte salto compressivo in N \rightarrow Shock)', ...
-    'TIC + TOP (Transizione continua d\theta/dx = 0 in N)', 'Location', 'southeast');
-
-% --- FIGURA 3: Analisi Termica 1D (Numero di Mach, h_g di Bartz, Flusso q e Temperature) ---
-figure('Name', '3 - Analisi Scambio Termico Rigenerativo 1D (Bartz + Dittus-Boelter)', 'Color', 'w', 'Position', [100, 80, 1050, 580]);
-subplot(2,2,1);
-plot(x_vec, M_vec, 'k-', 'LineWidth', 1.8); grid on;
-xline(x_throat, 'r--', 'Gola');
-xline(x_throat + geom_2D.x_tr_rel, 'g-.', 'Fine TIC');
-xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Mach Locale M(x) [-]');
-title('Profilo del Numero di Mach Lungo Camera e Ugello TIC+TOP');
-
-subplot(2,2,2);
-plot(x_vec, h_g_vec/1e3, 'r-', 'LineWidth', 1.8); grid on;
-xline(x_throat, 'k--', 'Gola');
-xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('h_g(x) [kW/(m^2\cdotK)]');
-title('Coefficiente Convettivo Lato Gas Caldi (Bartz)');
-
-subplot(2,2,3);
-plot(x_vec(1:idx_regen_end), q_flux(1:idx_regen_end)/1e6, 'm-', 'LineWidth', 2.0); grid on;
-xline(x_throat, 'k--', 'Gola');
-xline(x_throat + geom_2D.x_tr_rel, 'g-.', 'Fine TIC');
-xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Flusso Termico q(x) [MW/m^2]');
-title('Flusso Termico Locale alla Parete (Zona Raffreddata)');
-
-subplot(2,2,4);
-plot(x_vec(1:idx_regen_end), T_wh(1:idx_regen_end), 'r-', 'LineWidth', 2.0); hold on;
-plot(x_vec(1:idx_regen_end), T_co(1:idx_regen_end), 'b-', 'LineWidth', 2.0);
-yline(T_wh_limit, 'k--', 'Limite CuCrZr (1000 K)', 'LineWidth', 1.4);
-xline(x_throat, 'k:', 'Gola'); grid on;
-xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Temperatura [K]');
-title('Temperatura Parete Calda T_{wh}(x) e Refrigerante T_{co}(x)');
-legend('T_{wh} (Parete Calda Rame)', 'T_{co} (Idrogeno nei Canali)', 'Limite 1000 K', 'Location', 'northwest');
-
-% --- FIGURA 4: Studio Parametrico sul Punto di Inizio del TOP (eps_tr) ---
-figure('Name', '4 - Sensibilita'' sul Punto di Transizione TIC -> TOP (eps_tr)', 'Color', 'w', 'Position', [130, 90, 1180, 520]);
-
-subplot(1,3,1);
-yyaxis left
-plot(eps_tr_scan_vec, Isp_scan_tr, 'b-o', 'LineWidth', 2.0, 'MarkerFaceColor', 'b'); hold on;
-yline(Isp_opt_TOP, 'r--', 'Solo TOP Puro', 'LineWidth', 1.5);
-plot(eps_tr_best, Isp_scan_tr(idx_best_tr), 'kp', 'MarkerSize', 14, 'MarkerFaceColor', 'y');
-ylabel('Impulso Specifico Reale I_{sp,vac} [s]');
-yyaxis right
-plot(eps_tr_scan_vec, m0_scan_tr, 'm-s', 'LineWidth', 1.8);
-ylabel('Massa Iniziale 2° Stadio m_0 [t]');
-xlabel('Rapporto d''Area Inizio TOP \epsilon_{tr} = A_{tr}/A_t [-]');
-title('Prestazioni al Variare di \epsilon_{tr} (Inizio TOP)');
-legend('I_{sp} (TIC+TOP)', 'I_{sp} (Solo TOP)', 'Ottimo \epsilon_{tr}', 'Massa m_0 [t]', 'Location', 'south');
-grid on;
-
-subplot(1,3,2);
-yyaxis left
-plot(eps_tr_scan_vec, lam_scan_tr*100, 'g-d', 'LineWidth', 2.0, 'MarkerFaceColor', 'g'); hold on;
-yline(lam_TOP_opt*100, 'r--', 'Solo TOP Puro', 'LineWidth', 1.4);
-ylabel('Efficienza Geometrica + Shock \lambda [%]');
-yyaxis right
-plot(eps_tr_scan_vec, x_tr_scan_m*100, 'k-^', 'LineWidth', 1.8);
-ylabel('Lunghezza Assiale Tratto TIC x_{tr} - x_t [cm]');
-xlabel('Rapporto d''Area Inizio TOP \epsilon_{tr} = A_{tr}/A_t [-]');
-title('Trade-off Efficienza \lambda vs Estensione Tratto TIC');
-grid on;
-
-subplot(1,3,3);
-eps_tr_demo = [1.5, 3.5, 6.5, 10.0];
-cols_demo = {'c-', 'b-', 'm-', 'g-'};
-plot(geom_2D.x_div_TOP_only, geom_2D.theta_div_TOP_only, 'r--', 'LineWidth', 2.0); hold on;
-for kd = 1:length(eps_tr_demo)
-    [thN_d, thE_d, ~, ~] = parametri_Rao_TIC_TOP(eps_opt, Ln_TOP, eps_tr_demo(kd));
-    g_d = costruisci_camera_TIC_TOP(Rt_e, eps_opt, Ln_TOP, eps_c, L_star, theta_conv, thN_d, thE_d, eps_tr_demo(kd));
-    plot(g_d.x_div_rel, g_d.theta_div_deg, cols_demo{kd}, 'LineWidth', 1.8);
-    plot(g_d.x_tr_rel,  g_d.theta_tr_deg,  'ko', 'MarkerSize', 6, 'MarkerFaceColor', 'y', 'HandleVisibility', 'off');
-end
-xlim([0, 1.5]); grid on;
-xlabel('Distanza Assiale dalla Gola x - x_t [m] (Primi 1.5 m)');
-ylabel('Angolo Locale di Parete \theta(x) [deg]');
-title('Confronto Pendenza \theta(x) al Variare di \epsilon_{tr}');
-legend('Solo TOP Puro', '\epsilon_{tr} = 1.5 (Corto)', '\epsilon_{tr} = 3.5 (Ottimo)', ...
-    '\epsilon_{tr} = 6.5 (Medio)', '\epsilon_{tr} = 10.0 (Esteso)', 'Location', 'northeast');
+% %% 8. GRAFICI COMPLETI PER LA RELAZIONE E PRESENTAZIONE
+% % --- FIGURA 1: Analisi Parametrica O/F (Con Confronto Prestazioni TIC+TOP vs Solo TOP) ---
+% figure('Name', '1 - Analisi Parametrica O/F e Confronto Prestazioni TIC+TOP vs TOP', 'Color', 'w', 'Position', [40, 60, 1060, 580]);
+% subplot(2,2,1);
+% plot(OF_vec, Tc_vec, 'r-o', 'LineWidth', 1.8); grid on;
+% xlabel('Rapporto di Miscela O/F [-]'); ylabel('T_c [K]');
+% title('Temperatura in Camera di Combustione (CEA)');
+% 
+% subplot(2,2,2);
+% plot(OF_vec, Isp_eq_vec,   'b--', 'LineWidth', 1.4); hold on;
+% plot(OF_vec, Isp_froz_vec, 'k:',  'LineWidth', 1.4);
+% plot(OF_vec, Isp_TOP_vec,  'm-.', 'LineWidth', 1.6);
+% plot(OF_vec, Isp_re_vec,   'r-s', 'LineWidth', 2.0); grid on;
+% xlabel('Rapporto di Miscela O/F [-]'); ylabel('I_{sp,vac} [s]');
+% title('Impulso Specifico nel Vuoto (Confronto TOP Puro vs TIC+TOP)');
+% legend('CEA Equilibrium', 'CEA Frozen Gola', 'Reale Solo TOP', 'Reale Ibrido TIC+TOP', 'Location', 'southwest');
+% 
+% subplot(2,2,3);
+% plot(OF_vec, xF_vec*100, 'm-d', 'LineWidth', 1.8); grid on;
+% yline(100, 'r--', 'Limite Full-Flow (100%)');
+% xlabel('Rapporto di Miscela O/F [-]'); ylabel('Frazione Fuel in Turbina x_F [%]');
+% title(sprintf('Frazione Split-Flow x_F richiesta a P_c = %d bar', Pc_bar));
+% 
+% subplot(2,2,4);
+% yyaxis left
+% plot(OF_vec, m0_TOP_t_vec, 'c--', 'LineWidth', 1.5); hold on;
+% plot(OF_vec, m0_t_vec,     'b-o', 'LineWidth', 2.0);
+% plot(OF_opt, m0_min_t,     'kp',  'MarkerSize', 14, 'MarkerFaceColor', 'y');
+% ylabel('Massa Iniziale 2° Stadio m_0 [t]');
+% yyaxis right
+% plot(OF_vec, V_tanks_vec, 'r-s', 'LineWidth', 1.8);
+% ylabel('Volume Totale Serbatoi V_{tanks} [m^3]');
+% xlabel('Rapporto di Miscela O/F [-]');
+% title('Massa Stadio m_0 (TIC+TOP vs TOP) e Volume Serbatoi');
+% legend('m_0 (Solo TOP)', 'm_0 (Ibrido TIC+TOP)', 'Punto Ottimo', 'V_{tanks}', 'Location', 'northwest');
+% grid on;
+% 
+% % --- FIGURA 2: Confronto Diretto Profilo Geometrico 2D, Angolo e Curvatura (TIC+TOP vs TOP Puro) ---
+% figure('Name', '2 - Confronto Geometrico e Gasdinamico: Ibrido TIC+TOP vs Solo TOP', 'Color', 'w', 'Position', [70, 70, 1220, 520]);
+% 
+% subplot(1,3,1);
+% plot(geom_2D.x_cam_all,  geom_2D.r_cam_all, 'k-', 'LineWidth', 2.0); hold on;
+% plot(geom_2D.x_cam_all, -geom_2D.r_cam_all, 'k-', 'LineWidth', 2.0, 'HandleVisibility', 'off');
+% plot(x_throat + geom_2D.x_TOP_ref,  geom_2D.r_TOP_ref, 'r--', 'LineWidth', 1.8);
+% plot(x_throat + geom_2D.x_TOP_ref, -geom_2D.r_TOP_ref, 'r--', 'LineWidth', 1.8, 'HandleVisibility', 'off');
+% plot(x_throat + geom_2D.x_tic_rel,  geom_2D.r_tic, 'g-', 'LineWidth', 2.8);
+% plot(x_throat + geom_2D.x_tic_rel, -geom_2D.r_tic, 'g-', 'LineWidth', 2.8, 'HandleVisibility', 'off');
+% plot(x_throat + geom_2D.x_top_rel,  geom_2D.r_top, 'b-', 'LineWidth', 2.2);
+% plot(x_throat + geom_2D.x_top_rel, -geom_2D.r_top, 'b-', 'LineWidth', 2.2, 'HandleVisibility', 'off');
+% xline(x_throat, 'r:', 'Gola', 'LineWidth', 1.2);
+% xline(x_vec(idx_regen_end), 'c-.', 'Fine Cooling (\epsilon=12)', 'LineWidth', 1.3);
+% plot(x_throat + geom_2D.xN_rel,   geom_2D.yN,   'ms', 'MarkerSize', 7, 'MarkerFaceColor', 'm');
+% plot(x_throat + geom_2D.x_tr_rel, geom_2D.r_tr, 'ko', 'MarkerSize', 7, 'MarkerFaceColor', 'y');
+% yline(0, 'k:', 'HandleVisibility', 'off');
+% axis equal; grid on;
+% xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Raggio Locale r [m]');
+% title(sprintf('Contorno 2D Motore Completo (L_{tot} = %.2f m, \\epsilon = %.1f)', L_tot_engine, eps_opt));
+% legend('Camera + Gola (R_u, R_d)', 'Profilo Solo TOP (Rao Puro)', ...
+%     '1^a Parte: Tratto TIC (C^2)', '2^a Parte: Parabola TOP', ...
+%     'Gola', 'Fine Cooling (\epsilon=12)', 'Punto Inflessione N', ...
+%     sprintf('Raccordo TIC\\rightarrowTOP (\\epsilon=%.1f)', eps_tr_TIC), 'Location', 'northwest');
+% 
+% subplot(1,3,2);
+% yyaxis left
+% plot(geom_2D.x_div_TOP_only, geom_2D.theta_div_TOP_only, 'r--', 'LineWidth', 1.8); hold on;
+% plot(geom_2D.x_div_rel,      geom_2D.theta_div_deg,      'b-',  'LineWidth', 2.2);
+% ylabel('Angolo Locale di Parete \theta(x) [deg]');
+% yyaxis right
+% r_TOP_interp = interp1(geom_2D.x_div_TOP_only, geom_2D.r_div_TOP_only, geom_2D.x_div_rel, 'pchip');
+% delta_r_mm = (geom_2D.r_div_rel - r_TOP_interp)*1000;
+% plot(geom_2D.x_div_rel, delta_r_mm, 'g-.', 'LineWidth', 1.8);
+% ylabel('Scostamento Radiale \Delta r = r_{TIC+TOP} - r_{TOP} [mm]');
+% xline(geom_2D.xN_rel,   'm:', 'Punto N');
+% xline(geom_2D.x_tr_rel, 'k-.', sprintf('Fine TIC (\\epsilon=%.1f)', eps_tr_TIC));
+% grid on;
+% xlabel('Distanza Assiale dalla Gola x - x_t [m]');
+% title('Confronto Pendenza \theta(x) e Scostamento \Delta r [mm]');
+% legend('Solo TOP (\theta)', 'Ibrido TIC+TOP (\theta)', '\Delta r(x) [mm]', 'Location', 'northeast');
+% 
+% subplot(1,3,3);
+% plot(geom_2D.x_div_TOP_only, geom_2D.dtheta_dx_TOP_only, 'r--', 'LineWidth', 1.8); hold on;
+% plot(geom_2D.x_div_rel,      geom_2D.dtheta_dx_TICTOP,   'b-',  'LineWidth', 2.2);
+% xline(geom_2D.xN_rel,   'm:', 'Salto in N (TOP)');
+% xline(geom_2D.x_tr_rel, 'k-.', 'Transizione TIC\rightarrowTOP');
+% yline(0, 'k:');
+% xlim([0, min(1.0, geom_2D.L_noz)]); grid on;
+% xlabel('Distanza Assiale dalla Gola x - x_t [m] (Zoom Primi 1.0 m)');
+% ylabel('Gradiente di Rotazione Parete d\theta/dx [deg/m]');
+% title('Smorzamento Discontinuita'' in N (Riduzione Urto Interno)');
+% legend('Solo TOP (Forte salto compressivo in N \rightarrow Shock)', ...
+%     'TIC + TOP (Transizione continua d\theta/dx = 0 in N)', 'Location', 'southeast');
+% 
+% % --- FIGURA 3: Analisi Termica 1D (Numero di Mach, h_g di Bartz, Flusso q e Temperature) ---
+% figure('Name', '3 - Analisi Scambio Termico Rigenerativo 1D (Bartz + Dittus-Boelter)', 'Color', 'w', 'Position', [100, 80, 1050, 580]);
+% subplot(2,2,1);
+% plot(x_vec, M_vec, 'k-', 'LineWidth', 1.8); grid on;
+% xline(x_throat, 'r--', 'Gola');
+% xline(x_throat + geom_2D.x_tr_rel, 'g-.', 'Fine TIC');
+% xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Mach Locale M(x) [-]');
+% title('Profilo del Numero di Mach Lungo Camera e Ugello TIC+TOP');
+% 
+% subplot(2,2,2);
+% plot(x_vec, h_g_vec/1e3, 'r-', 'LineWidth', 1.8); grid on;
+% xline(x_throat, 'k--', 'Gola');
+% xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('h_g(x) [kW/(m^2\cdotK)]');
+% title('Coefficiente Convettivo Lato Gas Caldi (Bartz)');
+% 
+% subplot(2,2,3);
+% plot(x_vec(1:idx_regen_end), q_flux(1:idx_regen_end)/1e6, 'm-', 'LineWidth', 2.0); grid on;
+% xline(x_throat, 'k--', 'Gola');
+% xline(x_throat + geom_2D.x_tr_rel, 'g-.', 'Fine TIC');
+% xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Flusso Termico q(x) [MW/m^2]');
+% title('Flusso Termico Locale alla Parete (Zona Raffreddata)');
+% 
+% subplot(2,2,4);
+% plot(x_vec(1:idx_regen_end), T_wh(1:idx_regen_end), 'r-', 'LineWidth', 2.0); hold on;
+% plot(x_vec(1:idx_regen_end), T_co(1:idx_regen_end), 'b-', 'LineWidth', 2.0);
+% yline(T_wh_limit, 'k--', 'Limite CuCrZr (1000 K)', 'LineWidth', 1.4);
+% xline(x_throat, 'k:', 'Gola'); grid on;
+% xlabel('Coordinata Assiale x dalla Piastra di Iniezione [m]'); ylabel('Temperatura [K]');
+% title('Temperatura Parete Calda T_{wh}(x) e Refrigerante T_{co}(x)');
+% legend('T_{wh} (Parete Calda Rame)', 'T_{co} (Idrogeno nei Canali)', 'Limite 1000 K', 'Location', 'northwest');
+% 
+% % --- FIGURA 4: Studio Parametrico sul Punto di Inizio del TOP (eps_tr) ---
+% figure('Name', '4 - Sensibilita'' sul Punto di Transizione TIC -> TOP (eps_tr)', 'Color', 'w', 'Position', [130, 90, 1180, 520]);
+% 
+% subplot(1,3,1);
+% yyaxis left
+% plot(eps_tr_scan_vec, Isp_scan_tr, 'b-o', 'LineWidth', 2.0, 'MarkerFaceColor', 'b'); hold on;
+% yline(Isp_opt_TOP, 'r--', 'Solo TOP Puro', 'LineWidth', 1.5);
+% plot(eps_tr_best, Isp_scan_tr(idx_best_tr), 'kp', 'MarkerSize', 14, 'MarkerFaceColor', 'y');
+% ylabel('Impulso Specifico Reale I_{sp,vac} [s]');
+% yyaxis right
+% plot(eps_tr_scan_vec, m0_scan_tr, 'm-s', 'LineWidth', 1.8);
+% ylabel('Massa Iniziale 2° Stadio m_0 [t]');
+% xlabel('Rapporto d''Area Inizio TOP \epsilon_{tr} = A_{tr}/A_t [-]');
+% title('Prestazioni al Variare di \epsilon_{tr} (Inizio TOP)');
+% legend('I_{sp} (TIC+TOP)', 'I_{sp} (Solo TOP)', 'Ottimo \epsilon_{tr}', 'Massa m_0 [t]', 'Location', 'south');
+% grid on;
+% 
+% subplot(1,3,2);
+% yyaxis left
+% plot(eps_tr_scan_vec, lam_scan_tr*100, 'g-d', 'LineWidth', 2.0, 'MarkerFaceColor', 'g'); hold on;
+% yline(lam_TOP_opt*100, 'r--', 'Solo TOP Puro', 'LineWidth', 1.4);
+% ylabel('Efficienza Geometrica + Shock \lambda [%]');
+% yyaxis right
+% plot(eps_tr_scan_vec, x_tr_scan_m*100, 'k-^', 'LineWidth', 1.8);
+% ylabel('Lunghezza Assiale Tratto TIC x_{tr} - x_t [cm]');
+% xlabel('Rapporto d''Area Inizio TOP \epsilon_{tr} = A_{tr}/A_t [-]');
+% title('Trade-off Efficienza \lambda vs Estensione Tratto TIC');
+% grid on;
+% 
+% subplot(1,3,3);
+% eps_tr_demo = [1.5, 3.5, 6.5, 10.0];
+% cols_demo = {'c-', 'b-', 'm-', 'g-'};
+% plot(geom_2D.x_div_TOP_only, geom_2D.theta_div_TOP_only, 'r--', 'LineWidth', 2.0); hold on;
+% for kd = 1:length(eps_tr_demo)
+%     [thN_d, thE_d, ~, ~] = parametri_Rao_TIC_TOP(eps_opt, Ln_TOP, eps_tr_demo(kd));
+%     g_d = costruisci_camera_TIC_TOP(Rt_e, eps_opt, Ln_TOP, eps_c, L_star, theta_conv, thN_d, thE_d, eps_tr_demo(kd));
+%     plot(g_d.x_div_rel, g_d.theta_div_deg, cols_demo{kd}, 'LineWidth', 1.8);
+%     plot(g_d.x_tr_rel,  g_d.theta_tr_deg,  'ko', 'MarkerSize', 6, 'MarkerFaceColor', 'y', 'HandleVisibility', 'off');
+% end
+% xlim([0, 1.5]); grid on;
+% xlabel('Distanza Assiale dalla Gola x - x_t [m] (Primi 1.5 m)');
+% ylabel('Angolo Locale di Parete \theta(x) [deg]');
+% title('Confronto Pendenza \theta(x) al Variare di \epsilon_{tr}');
+% legend('Solo TOP Puro', '\epsilon_{tr} = 1.5 (Corto)', '\epsilon_{tr} = 3.5 (Ottimo)', ...
+%     '\epsilon_{tr} = 6.5 (Medio)', '\epsilon_{tr} = 10.0 (Esteso)', 'Location', 'northeast');
 
 %% 9. ESPORTAZIONE PARAMETRI TEORIA 1D PER CONFRONTO CODICE RAO / MOC
 Ru_univ = 8314.462;                                 % Costante universale dei gas [J/(kmol K)]
@@ -821,10 +847,10 @@ x_div_TICTOP_cfd = geom_2D.x_div_rel;
 r_div_TICTOP_cfd = geom_2D.r_div_rel;
 
 % Esportazione tramite funzione dedicata (compatibile SpaceClaim + DesignModeler)
-esporta_profilo_ANSYS('ANSYS_Camera_Completa_TOP_Puro.txt',   x_full_TOP,       r_full_TOP,       N_cfd_pts);
-esporta_profilo_ANSYS('ANSYS_Camera_Completa_TIC_TOP.txt',    x_full_TICTOP,    r_full_TICTOP,    N_cfd_pts);
-esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TOP_Puro.txt',   x_div_TOP_cfd,    r_div_TOP_cfd,    N_cfd_pts);
-esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TIC_TOP.txt',    x_div_TICTOP_cfd, r_div_TICTOP_cfd, N_cfd_pts);
+esporta_profilo_ANSYS('ANSYS_Camera_Completa_TOP_Puro.xlsx',   x_full_TOP*1000,       r_full_TOP*1000,       N_cfd_pts);
+esporta_profilo_ANSYS('ANSYS_Camera_Completa_TIC_TOP.xlsx',    x_full_TICTOP*1000,    r_full_TICTOP*1000,    N_cfd_pts);
+esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TOP_Puro.xlsx',   x_div_TOP_cfd*1000,    r_div_TOP_cfd*1000,    N_cfd_pts);
+esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TIC_TOP.xlsx',    x_div_TICTOP_cfd*1000, r_div_TICTOP_cfd*1000, N_cfd_pts);
 
 fprintf('================== ESPORTAZIONE PROFILI PER ANSYS CFD ==================\n');
 fprintf('  Creati con successo 4 file di coordinate (500 punti, metri, 3D curve):\n');
@@ -834,6 +860,55 @@ fprintf('  3) ANSYS_Solo_Divergente_TOP_Puro.txt  (Gola x=0      -> Uscita x=%.3
 fprintf('  4) ANSYS_Solo_Divergente_TIC_TOP.txt   (Gola x=0      -> Uscita x=%.3f m, TIC+TOP)\n', x_div_TICTOP_cfd(end));
 fprintf('=========================================================================\n');
 
+%% ESPORTAZIONE COORDINATE PER AUTODESK INVENTOR
+
+% Conversione coordinate da metri a millimetri
+scala = 1000;
+
+% Profilo completo TIC + TOP
+punti_TICTOP = scala * [x_full_TICTOP(:), ...
+                        r_full_TICTOP(:), ...
+                        zeros(numel(x_full_TICTOP),1)];
+
+writematrix(punti_TICTOP, 'Inventor_TIC_TOP.xlsx');
+
+% Profilo completo TOP puro
+punti_TOP = scala * [x_full_TOP(:), ...
+                     r_full_TOP(:), ...
+                     zeros(numel(x_full_TOP),1)];
+
+writematrix(punti_TOP, 'Inventor_TOP_Puro.xlsx');
+
+%% ESPORTAZIONE CANALI TOP PURO PER INVENTOR
+
+% Intervalli della zona raffreddata
+idx = 1:(idx_regen_end-1);
+
+% Coordinate assiali dei punti medi
+x_mid = 0.5*(x_vec(idx) + x_vec(idx+1));
+
+% Raggi interni dell'ugello nei punti medi
+R_mid = 0.5*(R_vec(idx) + R_vec(idx+1));
+
+% Altezze calcolate sul TOP puro
+H = H_chan_vec(idx);
+
+% Raggi rispetto all'asse del motore
+R_canale_int = R_mid + t_wall;
+R_canale_est = R_mid + t_wall + H;
+
+% Coordinate XYZ in millimetri
+x_mm = x_mid(:)*1000;
+r_mm = R_canale_est(:)*1000;
+z_mm = zeros(size(x_mm));
+
+% Esportazione TXT
+writematrix([x_mm, r_mm, z_mm], ...
+    'Canale_TOP_Puro.txt', 'Delimiter', 'tab');
+
+% Esportazione Excel per Inventor
+writematrix([x_mm, r_mm, z_mm], ...
+    'Canale_TOP_Puro.xlsx');
 %% ========================================================================
 %  FUNZIONI LOCALI DI SUPPORTO VERIFICATE E CORRETTE
 %  ========================================================================
