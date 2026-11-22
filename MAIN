@@ -349,27 +349,51 @@ for j = 1:N_pts
     h_g_vec(j)  = h_g_base(j)*sigma_B;
 end
 
-%% 7. INTEGRAZIONE CIRCUITO DI RAFFREDDAMENTO (TABELLE NIST 170-260 bar + CHIUSURA PRESSIONE)
-P_grid     = [170, 180, 190, 200, 210, 220, 230, 240, 250, 260]; % Pressioni scaricate [bar]
-nist_files = {'H2_170.txt', 'H2_180.txt', 'H2_190.txt', 'H2_200.txt', 'H2_210.txt', ...
-              'H2_220.txt', 'H2_230.txt', 'H2_240.txt', 'H2_250.txt', 'H2_260.txt'};
+%% 7. INTEGRAZIONE CIRCUITO DI RAFFREDDAMENTO (AUTO-CARICAMENTO TABELLE NIST + CHIUSURA PRESSIONE)
+P_candidates = 150:10:300;
+P_grid       = [];
+nist_files   = {};
+for p_val = P_candidates
+    fname = sprintf('H2_%d.txt', p_val);
+    if isfile(fname)
+        P_grid(end + 1)     = p_val; %#ok<SAGROW>
+        nist_files{end + 1} = fname; %#ok<SAGROW>
+    end
+end
+if length(P_grid) < 2
+    error('Servono almeno 2 tabelle NIST (es. H2_170.txt ... H2_260.txt) nella cartella corrente.');
+end
 
+nP = length(P_grid);
 nP = length(P_grid);
 for k = 1:nP
     opts   = detectImportOptions(nist_files{k}, 'Delimiter', '\t', 'VariableNamingRule', 'preserve');
     T_data = readtable(nist_files{k}, opts);
+
+    [T_k, idx_u] = unique(T_data{:, 1}, 'stable'); % Temperature del file k [K]
+    rho_k        = T_data{idx_u, 3};               % Densita' [kg/m^3]
+    cp_k         = T_data{idx_u, 9}*1e3;           % Da J/(g*K) -> J/(kg*K)
+    mu_k         = T_data{idx_u, 12};              % Viscosita' [Pa*s]
+    k_k          = T_data{idx_u, 13};              % Conducibilita' termica [W/(m*K)]
+
     if k == 1
-        T_grid  = T_data{:, 1};     % Temperatura [K]
-        nT      = length(T_grid);
-        RHO_tab = zeros(nT, nP);
-        CP_tab  = zeros(nT, nP);
-        MU_tab  = zeros(nT, nP);
-        K_tab   = zeros(nT, nP);
+        T_grid        = T_k;
+        nT            = length(T_grid);
+        RHO_tab       = zeros(nT, nP);
+        CP_tab        = zeros(nT, nP);
+        MU_tab        = zeros(nT, nP);
+        K_tab         = zeros(nT, nP);
+        RHO_tab(:, 1) = rho_k;
+        CP_tab(:, 1)  = cp_k;
+        MU_tab(:, 1)  = mu_k;
+        K_tab(:, 1)   = k_k;
+    else
+        % Riallinea automaticamente ogni file sulla stessa griglia T_grid
+        RHO_tab(:, k) = interp1(T_k, rho_k, T_grid, 'linear', 'extrap');
+        CP_tab(:, k)  = interp1(T_k, cp_k,  T_grid, 'linear', 'extrap');
+        MU_tab(:, k)  = interp1(T_k, mu_k,  T_grid, 'linear', 'extrap');
+        K_tab(:, k)   = interp1(T_k, k_k,   T_grid, 'linear', 'extrap');
     end
-    RHO_tab(:, k) = T_data{:, 3};       % Densita' [kg/m^3]
-    CP_tab(:, k)  = T_data{:, 9}*1e3;   % Da J/(g*K) -> J/(kg*K)
-    MU_tab(:, k)  = T_data{:, 12};      % Viscosita' [Pa*s]
-    K_tab(:, k)   = T_data{:, 13};      % Conducibilita' termica [W/(m*K)]
 end
 
 % Parametri liner CuCrZr e geometria canali fresati
@@ -527,13 +551,14 @@ while (err_P_cool > tol_P) && (iter_P < max_iter_P)
 end
 
 if P_in_cool_bar > P_grid(end) || P_co_bar(1) < P_grid(1)
-    warning('Pressione nei canali [%.1f - %.1f bar] fuori dal range tabelle NIST [%.0f - %.0f bar]: proprieta'' saturate ai bordi.', ...
+    warning('Pressione nei canali [%.1f - %.1f bar] fuori dal range tabelle NIST caricate [%.0f - %.0f bar]: proprieta'' saturate ai bordi.', ...
         P_co_bar(1), P_in_cool_bar, P_grid(1), P_grid(end));
 end
 
 a_FPB_chan = P_in_cool_bar/P_in_t; % Rapporto perdite solo canali (confronto con a_FPB = 1.45)
 
 fprintf('================== VALIDAZIONE SCAMBIO TERMICO (BARTZ + NIST) ==================\n');
+fprintf('  Tabelle NIST caricate                     : %.0f - %.0f bar (%d file)\n', P_grid(1), P_grid(end), nP);
 fprintf('  Convergenza pressione raggiunta in        : %d iterazioni (err = %.4f bar)\n', iter_P, err_P_cool);
 fprintf('  Potenza termica estratta (singolo motore) : %.2f MW\n', Q_dot_single/1e6);
 fprintf('  Q_dot / m_dot_F assunto nel ciclo         : %.2f MJ/kg\n', Q_dot_m_dot_F/1e6);
@@ -692,7 +717,7 @@ scala     = 1000;
 punti_TOP = scala*[geom_2D.x_full(:), geom_2D.r_full(:), zeros(numel(geom_2D.x_full), 1)];
 writematrix(punti_TOP, 'Inventor_TOP_Puro.xlsx');
 
-% 9C. Profilo esterno dei canali di raffreddamento TOP per Inventor (mm)
+% 9C. Profilo esterno e interno dei canali di raffreddamento TOP per Inventor (mm)
 idx          = 1:(idx_regen_end - 1);
 x_mid        = 0.5*(x_vec(idx) + x_vec(idx + 1));
 R_mid        = 0.5*(R_vec(idx) + R_vec(idx + 1));
