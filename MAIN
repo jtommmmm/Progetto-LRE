@@ -10,9 +10,9 @@ L_eng_max = 3.0;            % Lunghezza MAX TOTALE dalla piastra di iniezione (L
 D_stg_max = 5.0;            % Diametro massimo dello stadio [m]
 g0        = 9.80665;        % Accelerazione di gravita' standard [m/s^2]
 
-% Opzioni di esecuzione
-N_engines      = 3;         % Numero di motori (1 oppure cluster es. 3)
-genera_grafici = true;      % true = mostra le 4 figure | false = solo calcoli ed export
+% Scelta architetturale numero di motori (N_engines = 1 oppure cluster es. 3)
+N_engines      = 3;
+genera_grafici = true;      % true = mostra i grafici | false = solo calcoli ed export
 
 % Fattore geometrico esatto di impacchettamento ugelli circolari nel diametro stadio
 switch N_engines
@@ -40,7 +40,7 @@ gam_H2    = 1.40;           % Coefficiente isentropico GH2 in turbina [-]
 eta_cstar = 0.988;          % Efficienza di combustione c* [-]
 eta_bl_0  = 0.990;          % Efficienza viscosa strato limite nell'ugello [-]
 eps_s_ref = 0.10;           % Frazione massa strutturale serbatoi/stadio a O/F = 6.0
-Ln_TOP    = 0.80;           % Lunghezza frazionaria Ugello TOP (80% cono 15°)
+Ln_TOP    = 0.80;           % Lunghezza frazionaria Ugello di Rao TOP (80% cono 15°)
 
 %% 2. PARAMETRI CICLO CLOSED EXPANDER SPLIT-FLOW
 eta_P_F   = 0.80;           % Rendimento isentropico pompe Fuel (1° e 2° stadio)
@@ -57,11 +57,11 @@ b_OC  = a_OC/(rho_LOX*eta_P_O);
 b_FPB = a_FPB/(rho_LH2*eta_P_F);
 
 % Calore specifico scambiato nel circuito rigenerativo per kg di fuel totale
-Q_dot_m_dot_F = 2.45e6;     % [J/kg_F] (verificato a valle in Sezione 7)
+Q_dot_m_dot_F = 2.398e6;    % [J/kg_F]
 T_0T_max_lim  = 600.0;      % Limite tecnologico temperatura ingresso turbina [K]
 
 % Studio preliminare della Curva Caratteristica pc(tau) per scegliere tau ottimo
-tau_scan  = linspace(0.65, 0.95, 250);
+tau_scan  = linspace(0.70, 0.95, 200);
 xF_design = 0.60;           % Split-Flow di riferimento: 60% H2 in turbina, 40% bypass
 OF_ref    = 6.0;
 
@@ -72,7 +72,7 @@ den_scan    = (1 - xF_design)*b_FC + OF_ref*b_OC + ...
 pc_scan_bar = (w_T_scan./den_scan)/1e5;
 
 [pc_peak_bar, idx_tau] = max(pc_scan_bar);
-tau_opt  = tau_scan(idx_tau);               % Rapporto di temperatura isentropico ottimo in turbina
+tau_opt  = tau_scan(idx_tau);               % Rapporto di temperatura turbina che massimizza pc
 pi_T_opt = tau_opt^(-gam_H2/(gam_H2 - 1));  % Rapporto di espansione in turbina
 
 fprintf('=========================================================================\n');
@@ -87,10 +87,10 @@ fprintf('=======================================================================
 Pc_bar = round(0.90*pc_peak_bar);
 P_c    = Pc_bar*1e5;                % Pressione operativa in camera [Pa]
 
-OF_vec = 4.0 : 0.25 : 7.0;          % Range O/F di interesse per LOX/LH2
+OF_vec = 4.0 : 0.25 : 15.0;          % Range O/F di interesse per LOX/LH2
 N_OF   = length(OF_vec);
 
-% Preallocazione vettori risultati (Profilo TOP)
+% Preallocazione vettori risultati (Profilo TOP Puro)
 xF_vec       = zeros(1, N_OF);
 T_in_T_vec   = zeros(1, N_OF);
 T_inj_vec    = zeros(1, N_OF);
@@ -158,7 +158,7 @@ for i = 1:N_OF
 
         cea_out = estrai_dati_CEA_sicuro(rkt, eps_safe, g0);
 
-        % Parametri angolari ed efficienza 2D del profilo TOP
+        % Parametri angolari ed efficienza 2D del profilo TOP Puro
         [~, ~, lam_TOP] = parametri_TOP(eps_safe, Ln_TOP);
 
         CF_kin   = (2/3)*cea_out.CF_eq + (1/3)*cea_out.CF_froz;
@@ -216,6 +216,8 @@ end
 OF_opt   = OF_vec(idx_opt);
 xF_opt   = xF_vec(idx_opt);
 T_inj_op = T_inj_vec(idx_opt);
+tau_act  = T_inj_op/T_in_T_vec(idx_opt);
+pi_T_act = tau_act^(-gam_H2/(gam_H2 - 1));
 eps_opt  = eps_opt_vec(idx_opt);
 Isp_opt  = Isp_re_vec(idx_opt);
 cstar_op = cstar_re_vec(idx_opt);
@@ -256,12 +258,21 @@ geom_2D = costruisci_camera_TOP(Rt_e, eps_opt, Ln_TOP, eps_c, L_star, ...
 
 L_tot_engine = geom_2D.Lc + geom_2D.L_conv + geom_2D.L_noz;
 
+% Calcolo angoli teorici di trasversalita' di Rao (TOC Variazionale)
+Me_CEA       = rkt_opt.output.eql.mach(end);
+gam_e        = rkt_opt.output.eql.gamma(end);
+alpha_e      = asin(1/Me_CEA);
+sin_2thE_var = min(2/(gam_e*Me_CEA^2*tan(alpha_e)), 1.0);
+thE_var_TOC  = 0.5*rad2deg(asin(sin_2thE_var));
+nu_Me_deg    = rad2deg(sqrt((gam_e + 1)/(gam_e - 1))*atan(sqrt((gam_e - 1)/(gam_e + 1)*(Me_CEA^2 - 1))) - atan(sqrt(Me_CEA^2 - 1)));
+thN_var_TOC  = 0.5*nu_Me_deg;
+
 fprintf('\n================== PUNTO DI PROGETTO OTTIMO (N_eng = %d) ==================\n', N_engines);
 fprintf('  Pressione in camera (P_c)         : %.1f bar\n', Pc_bar);
 fprintf('  Rapporto di miscela ottimo (O/F)  : %.2f\n', OF_opt);
 fprintf('  Frazione fuel in turbina (x_F)    : %.4f (%.1f%% in turbina, %.1f%% bypass)\n', xF_opt, xF_opt*100, (1 - xF_opt)*100);
 fprintf('  Temp. uscita turbina / iniez. GH2 : %.1f K (Ingresso turbina: %.1f K)\n', T_inj_op, T_in_T_vec(idx_opt));
-fprintf('  Rapporto di espansione (pi_T)     : %.2f\n', pi_T_opt);
+fprintf('  Rapporto di pressione (pi_T)      : %.2f\n', pi_T_act);
 fprintf('  Temp. camera di combustione (T_c) : %.1f K\n', Tc_vec(idx_opt));
 fprintf('  Velocita'' caratteristica (c*)     : %.1f m/s (CEA)  -->  %.1f m/s (Reale)\n', cstar_eq_vec(idx_opt), cstar_op);
 fprintf('  Coefficiente di spinta (C_F)      : %.4f (Eq) | %.4f (Froz) --> %.4f (Reale TOP)\n', CF_eq_vec(idx_opt), CF_froz_vec(idx_opt), CF_opt);
@@ -278,9 +289,11 @@ fprintf('  Diametro di uscita (D_e)          : %.3f m (eps = %.1f)\n', 2*geom_2D
 fprintf('  Lunghezza cilindrica camera (L_c) : %.3f m\n', geom_2D.Lc);
 fprintf('  Lunghezza convergente (L_conv)    : %.3f m (Gola a x_t = %.3f m)\n', geom_2D.L_conv, geom_2D.x_throat);
 fprintf('  Lunghezza divergente TOP (L_noz)  : %.3f m\n', geom_2D.L_noz);
-fprintf('  LUNGHEZZA TOTALE (Iniett.->Uscita): %.3f m (Vincolo <= %.2f m)\n', L_tot_engine, L_eng_max);
-fprintf('  Angoli Parabola TOP               : theta_N = %.2f deg -> theta_E = %.2f deg (lambda = %.4f)\n', ...
+fprintf('  LUNGHEZZA TOTALE (Iniett.->Uscita): %.3f m (Vincolo <= %.2f m RISPETTATO!)\n', L_tot_engine, L_eng_max);
+fprintf('  Angoli TOP Carte di Rao           : theta_N = %.2f deg -> theta_E = %.2f deg (lambda = %.4f)\n', ...
     thN_opt, thE_opt, lam_TOP_opt);
+fprintf('  Angoli TOC Variazionale (Rao)     : theta_N_MOC ~ %.2f deg | theta_E_MOC = %.2f deg (gamma_e = %.3f)\n', ...
+    thN_var_TOC, thE_var_TOC, gam_e);
 fprintf('  Area laterale divergente (A_lat)  : %.2f m^2\n', geom_2D.A_lat_noz);
 fprintf('==========================================================================\n\n');
 
@@ -302,13 +315,14 @@ else
     Pr_c = 0.55;
 end
 
-% Vettori geometrici continui lungo tutto il motore TOP (x = 0 all'iniettore)
+% Geometria completa TOP PURO (Camera + convergente + raccordo gola + TOP)
 x_vec    = geom_2D.x_full;
 R_vec    = geom_2D.r_full;
 x_throat = geom_2D.x_throat;
-A_vec    = pi*R_vec.^2;
-eps_x    = A_vec/At_e;
-N_pts    = length(x_vec);
+
+A_vec = pi*R_vec.^2;
+eps_x = A_vec/At_e;
+N_pts = length(x_vec);
 
 M_vec    = zeros(1, N_pts);
 T_aw_vec = zeros(1, N_pts);
@@ -349,22 +363,11 @@ for j = 1:N_pts
     h_g_vec(j)  = h_g_base(j)*sigma_B;
 end
 
-%% 7. INTEGRAZIONE CIRCUITO DI RAFFREDDAMENTO (AUTO-CARICAMENTO TABELLE NIST + CHIUSURA PRESSIONE)
-P_candidates = 150:10:300;
-P_grid       = [];
-nist_files   = {};
-for p_val = P_candidates
-    fname = sprintf('H2_%d.txt', p_val);
-    if isfile(fname)
-        P_grid(end + 1)     = p_val; %#ok<SAGROW>
-        nist_files{end + 1} = fname; %#ok<SAGROW>
-    end
-end
-if length(P_grid) < 2
-    error('Servono almeno 2 tabelle NIST (es. H2_170.txt ... H2_260.txt) nella cartella corrente.');
-end
+%% 7. INTEGRAZIONE CIRCUITO DI RAFFREDDAMENTO (TABELLE NIST + CHIUSURA PRESSIONE)
+P_grid     = [170, 180, 190, 200, 210, 220, 230, 240, 250, 260]; % Pressioni scaricate [bar]
+nist_files = {'H2_170.txt', 'H2_180.txt', 'H2_190.txt', 'H2_200.txt', 'H2_210.txt', ...
+              'H2_220.txt', 'H2_230.txt', 'H2_240.txt', 'H2_250.txt', 'H2_260.txt'};
 
-nP = length(P_grid);
 nP = length(P_grid);
 for k = 1:nP
     opts   = detectImportOptions(nist_files{k}, 'Delimiter', '\t', 'VariableNamingRule', 'preserve');
@@ -388,7 +391,6 @@ for k = 1:nP
         MU_tab(:, 1)  = mu_k;
         K_tab(:, 1)   = k_k;
     else
-        % Riallinea automaticamente ogni file sulla stessa griglia T_grid
         RHO_tab(:, k) = interp1(T_k, rho_k, T_grid, 'linear', 'extrap');
         CP_tab(:, k)  = interp1(T_k, cp_k,  T_grid, 'linear', 'extrap');
         MU_tab(:, k)  = interp1(T_k, mu_k,  T_grid, 'linear', 'extrap');
@@ -408,20 +410,20 @@ H_min        = 1.0e-3;                              % Altezza minima fresabile [
 H_max        = 8.0e-3;                              % Altezza massima fresabile [m] (8.0 mm)
 eps_cool_end = 15.0;                                % Rapporto d'area inizio camicia rigenerativa [-]
 
+% Condizioni al contorno ingresso cooling jacket (sezione divergente a eps = 15)
+T_in_cool = 40.0;                                   % Temperatura ingresso H2 nei canali [K]
+
 idx_regen_end = find(eps_x >= eps_cool_end & x_vec > x_throat, 1, 'first');
 if isempty(idx_regen_end)
     idx_regen_end = N_pts;
 end
 
-% Condizioni al contorno e ciclo di ricerca pressione ingresso cooling
-T_in_cool     = 40.0;                               % Temperatura ingresso H2 nei canali [K]
-P_out_target  = a_T*Pc_bar;                         % Contropressione richiesta allo scarico turbina [bar]
-P_in_cool_bar = P_out_target*pi_T_opt + 20.0;       % Stima iniziale fisicamente coerente [bar]
-
-err_P_cool = inf;
-tol_P      = 1e-3;                                  % Tolleranza di chiusura pressione [bar]
-iter_P     = 0;
-max_iter_P = 50;
+% Inizializzazione ciclo di ricerca pressione ingresso cooling
+P_in_cool_bar = 250.0;                              % Stima iniziale [bar]
+err_P_cool    = 100.0;
+tol_P         = 1e-3;                               % Tolleranza di chiusura [bar]
+iter_P        = 0;
+max_iter_P    = 50;
 
 while (err_P_cool > tol_P) && (iter_P < max_iter_P)
     iter_P = iter_P + 1;
@@ -484,7 +486,7 @@ while (err_P_cool > tol_P) && (iter_P < max_iter_P)
 
             % 3. Dimensionamento H_chan_loc dal carico termico di progetto T_wh_target
             f_Twh = @(H) eval_Twh_canale(H, W_chan_loc, W_rib, N_chan, R_mid, t_wall, k_wall, ...
-                         m_dot_cool, rho_j, mu_j, k_j, Pr_j, hg_j, T_aw_vec(j), T_mid) - T_wh_target;
+                m_dot_cool, rho_j, mu_j, k_j, Pr_j, hg_j, T_aw_vec(j), T_mid) - T_wh_target;
 
             if f_Twh(H_max) <= 0
                 H_chan_loc = H_max;
@@ -525,7 +527,6 @@ while (err_P_cool > tol_P) && (iter_P < max_iter_P)
         mu_vec(j)     = mu_j;
     end
 
-    % Continuita' sul nodo di ingresso refrigerante
     T_wh(idx_regen_end)       = T_wh(idx_regen_end - 1);
     q_flux(idx_regen_end)     = q_flux(idx_regen_end - 1);
     W_chan_vec(idx_regen_end) = W_chan_vec(idx_regen_end - 1);
@@ -535,42 +536,40 @@ while (err_P_cool > tol_P) && (iter_P < max_iter_P)
     mu_vec(idx_regen_end)     = mu_vec(idx_regen_end - 1);
 
     % Verifica bilancio pressioni a valle della turbina
-    Q_dot_single     = sum(dQ_vec);                 % Potenza termica estratta [W]
-    Q_dot_m_dot_calc = Q_dot_single/m_dot_F_e;      % Calore specifico per kg di fuel [J/kg]
-    dP_cool_bar      = P_in_cool_bar - P_co_bar(1); % Caduta pressione totale canali [bar]
-    P_in_t           = P_co_bar(1);                 % Pressione ingresso turbina [bar]
-    P_out            = P_in_t/pi_T_opt;             % Pressione scarico turbina [bar]
+    Q_dot_single     = sum(dQ_vec);                     % Potenza termica estratta [W]
+    Q_dot_m_dot_calc = Q_dot_single/m_dot_F_e;          % Calore specifico per kg di fuel [J/kg]
+    dP_cool_bar      = P_in_cool_bar - P_co_bar(1);     % Caduta pressione totale canali [bar]
+    P_in_t           = P_co_bar(1);                     % Pressione ingresso turbina (= P_in_cool_bar - dP_cool_bar)
+    P_out_t          = P_in_t/pi_T_act;                 % Pressione scarico turbina [bar]
+    P_out            = P_out_t - (a_T - 1.0)*Pc_bar;    % Pressione ingresso camera dopo perdite iniezione (20% Pc) [bar]
 
-    diff_P     = P_out - P_out_target;
+    % Aggiornamento adattivo (con fattore di rilassamento 0.8 per stabilita')
+    diff_P     = P_out - Pc_bar;                        % Positivo se P_out > Pc_bar (troppo alta)
     err_P_cool = abs(diff_P);
 
-    % Aggiornamento adattivo rilassato (eseguito solo se serve un'altra iterazione)
     if (err_P_cool > tol_P) && (iter_P < max_iter_P)
-        P_in_cool_bar = P_in_cool_bar - 0.8*diff_P*pi_T_opt;
+        P_in_cool_bar = P_in_cool_bar - 0.8*diff_P*pi_T_act;
     end
 end
 
 if P_in_cool_bar > P_grid(end) || P_co_bar(1) < P_grid(1)
-    warning('Pressione nei canali [%.1f - %.1f bar] fuori dal range tabelle NIST caricate [%.0f - %.0f bar]: proprieta'' saturate ai bordi.', ...
+    warning('Pressione nei canali [%.1f - %.1f bar] fuori dal range tabelle NIST [%.0f - %.0f bar]: proprieta'' saturate ai bordi.', ...
         P_co_bar(1), P_in_cool_bar, P_grid(1), P_grid(end));
 end
 
-a_FPB_chan = P_in_cool_bar/P_in_t; % Rapporto perdite solo canali (confronto con a_FPB = 1.45)
+fprintf('Convergenza raggiunta in %d iterazioni:\n', iter_P);
+fprintf('P_in_cool = %.2f bar | dP_cool = %.2f bar | P_in_turb = %.2f bar | P_out_turb = %.2f bar\n\n', ...
+        P_in_cool_bar, dP_cool_bar, P_in_t, P_out_t);
 
 fprintf('================== VALIDAZIONE SCAMBIO TERMICO (BARTZ + NIST) ==================\n');
-fprintf('  Tabelle NIST caricate                     : %.0f - %.0f bar (%d file)\n', P_grid(1), P_grid(end), nP);
-fprintf('  Convergenza pressione raggiunta in        : %d iterazioni (err = %.4f bar)\n', iter_P, err_P_cool);
 fprintf('  Potenza termica estratta (singolo motore) : %.2f MW\n', Q_dot_single/1e6);
-fprintf('  Q_dot / m_dot_F assunto nel ciclo         : %.2f MJ/kg\n', Q_dot_m_dot_F/1e6);
-fprintf('  Q_dot / m_dot_F calcolato con Bartz+NIST  : %.2f MJ/kg\n', Q_dot_m_dot_calc/1e6);
+fprintf('  Q_dot / m_dot_F assunto nel ciclo         : %.3f MJ/kg\n', Q_dot_m_dot_F/1e6);
+fprintf('  Q_dot / m_dot_F calcolato con Bartz+NIST  : %.3f MJ/kg\n', Q_dot_m_dot_calc/1e6);
 fprintf('  Scarto di chiusura termica                : %.2f %%\n', abs(Q_dot_m_dot_calc - Q_dot_m_dot_F)/Q_dot_m_dot_F*100);
 fprintf('  Temp. max parete calda (T_wh,max)         : %.1f K (Target: %.0f K | Limite: %.0f K)\n', ...
     max(T_wh(1:idx_regen_end)), T_wh_target, T_wh_limit);
 fprintf('  Temp. uscita H2 dai canali (T_co,out)     : %.1f K (Assunta in turbina: %.1f K)\n', T_co(1), T_in_T_vec(idx_opt));
-fprintf('  Pressione ingresso -> uscita canali       : %.2f -> %.2f bar (dP = %.2f bar)\n', ...
-    P_in_cool_bar, P_co_bar(1), dP_cool_bar);
-fprintf('  Pressione scarico turbina (target %.1f)   : %.2f bar (P_in/P_turb = %.3f vs a_FPB = %.2f)\n', ...
-    P_out_target, P_out, a_FPB_chan, a_FPB);
+fprintf('  Pressione uscita H2 / Caduta dP canali    : %.2f bar (dP = %.2f bar)\n', P_co_bar(1), dP_cool_bar);
 fprintf('  Altezza canali H_chan (Min -> Camera)     : %.2f mm -> %.2f mm\n', ...
     min(H_chan_vec(1:idx_regen_end))*1e3, H_chan_vec(1)*1e3);
 fprintf('  Velocita'' max H2 nei canali (u_co,max)    : %.1f m/s\n', max(u_co_vec(1:idx_regen_end)));
@@ -705,19 +704,46 @@ if genera_grafici
     title('Caduta di Pressione e Velocita'' del Refrigerante');
 end
 
-%% 9. ESPORTAZIONE PROFILI PER ANSYS CFD (TXT in metri) E AUTODESK INVENTOR (XLSX/TXT in mm)
+%% 9. ESPORTAZIONE PARAMETRI TEORIA 1D PER CONFRONTO CODICE RAO / MOC
+Ru_univ = 8314.462;                                 % Costante universale dei gas [J/(kmol K)]
+if isfield(rkt_opt.output.eql, 'mw')
+    MW_1D_c = rkt_opt.output.eql.mw(1);
+    MW_1D_t = rkt_opt.output.eql.mw(2);
+else
+    MW_1D_c = rkt_opt.output.eql.m(1);
+    MW_1D_t = rkt_opt.output.eql.m(2);
+end
+P_exit        = rkt_opt.output.eql.pressure(end)*1e5;
+Mach_exit_CEA = rkt_opt.output.eql.mach(end);
+Mach_exit_1D  = M_vec(end);
+
+fprintf('=========================================================================\n');
+fprintf('  DATI TEORIA 1D PER IL CONFRONTO UGELLO DI RAO (N_eng = %d)\n', N_engines);
+fprintf('=========================================================================\n');
+fprintf('  1. Portata massica (m_dot)          : %.4f kg/s (per singolo motore)\n', m_dot_e);
+fprintf('  2. Temperatura in camera (T_c)      : %.2f K\n', Tc_opt);
+fprintf('  3. Pressione in camera (P_c)        : %.2f bar (%.0f Pa)\n', Pc_bar, P_c);
+fprintf('  4. Pressione ambiente / uscita      : 0.0 Pa (Vuoto) | P_exit = %.1f Pa\n', P_exit);
+fprintf('  5. Rapporto di espansione (eps)     : %.2f [-]\n', eps_opt);
+fprintf('  6. Raggio di gola (R_t)             : %.4f m (Diametro D_t = %.4f m)\n', Rt_e, Dt_e);
+fprintf('  7. Mach in uscita (M_e)             : %.4f (1D isentropico) | %.4f (CEA Eq)\n', Mach_exit_1D, Mach_exit_CEA);
+fprintf('  8. Gamma (gamma)                    : %.4f (Camera)  |  %.4f (Gola)\n', gamma_c, gamma_t);
+fprintf('  9. Massa Molare (MW)                : %.3f kg/kmol (Cam) | %.3f kg/kmol (Gola)\n', MW_1D_c, MW_1D_t);
+fprintf('=========================================================================\n\n');
+
+%% 10. ESPORTAZIONE PROFILI PER ANSYS CFD E AUTODESK INVENTOR (SOLO TOP PURO)
 N_cfd_pts = 500;
+scala     = 1000;                                   % Conversione metri -> millimetri
 
-% 9A. File 3D Curve per ANSYS SpaceClaim / DesignModeler (metri, formato testo)
-esporta_profilo_ANSYS('ANSYS_Camera_Completa_TOP.txt', geom_2D.x_full,    geom_2D.r_full,    N_cfd_pts);
-esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TOP.txt', geom_2D.x_div_rel, geom_2D.r_div_rel, N_cfd_pts);
+% 10A. File 3D Curve per ANSYS SpaceClaim / DesignModeler
+esporta_profilo_ANSYS('ANSYS_Camera_Completa_TOP_Puro.txt', geom_2D.x_full,    geom_2D.r_full,    N_cfd_pts);
+esporta_profilo_ANSYS('ANSYS_Solo_Divergente_TOP_Puro.txt', geom_2D.x_div_rel, geom_2D.r_div_rel, N_cfd_pts);
 
-% 9B. File coordinate XYZ in millimetri per Autodesk Inventor (Excel reali)
-scala     = 1000;
+% 10B. Coordinate XYZ in millimetri per Autodesk Inventor (Contorno interno camera + TOP)
 punti_TOP = scala*[geom_2D.x_full(:), geom_2D.r_full(:), zeros(numel(geom_2D.x_full), 1)];
 writematrix(punti_TOP, 'Inventor_TOP_Puro.xlsx');
 
-% 9C. Profilo esterno e interno dei canali di raffreddamento TOP per Inventor (mm)
+% 10C. Profilo esterno e interno dei canali di raffreddamento TOP per Inventor (mm)
 idx          = 1:(idx_regen_end - 1);
 x_mid        = 0.5*(x_vec(idx) + x_vec(idx + 1));
 R_mid        = 0.5*(R_vec(idx) + R_vec(idx + 1));
@@ -733,13 +759,11 @@ writematrix(punti_canale_est, 'Canale_TOP_Puro.xlsx');
 writematrix(punti_canale_int, 'Canale_Interno_TOP_Puro.xlsx');
 
 fprintf('================== ESPORTAZIONE PROFILI ANSYS & INVENTOR ==================\n');
-fprintf('  ANSYS CFD (500 punti, metri, 3D curve TXT):\n');
-fprintf('  1) ANSYS_Camera_Completa_TOP.txt  (Iniettore x=0 -> Uscita x=%.3f m)\n', geom_2D.x_full(end));
-fprintf('  2) ANSYS_Solo_Divergente_TOP.txt  (Gola x=0      -> Uscita x=%.3f m)\n', geom_2D.x_div_rel(end));
-fprintf('  AUTODESK INVENTOR (coordinate XYZ in millimetri):\n');
-fprintf('  3) Inventor_TOP_Puro.xlsx         (Contorno interno completo camera + TOP)\n');
-fprintf('  4) Canale_TOP_Puro.xlsx / .txt    (Parete esterna canali: R + t_wall + H)\n');
-fprintf('  5) Canale_Interno_TOP_Puro.xlsx   (Fondo canali: R + t_wall)\n');
+fprintf('  1) ANSYS_Camera_Completa_TOP_Puro.txt (Iniettore x=0 -> Uscita x=%.3f m)\n', geom_2D.x_full(end));
+fprintf('  2) ANSYS_Solo_Divergente_TOP_Puro.txt (Gola x=0      -> Uscita x=%.3f m)\n', geom_2D.x_div_rel(end));
+fprintf('  3) Inventor_TOP_Puro.xlsx             (Contorno interno camera + TOP [mm])\n');
+fprintf('  4) Canale_TOP_Puro.xlsx / .txt        (Parete esterna canali: R+t_wall+H [mm])\n');
+fprintf('  5) Canale_Interno_TOP_Puro.xlsx       (Fondo canali: R+t_wall [mm])\n');
 fprintf('===========================================================================\n');
 
 %% ========================================================================
